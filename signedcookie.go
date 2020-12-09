@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const encodedLen = 44
-
 // DefaultSigner is the default signer.
 var DefaultSigner = NewSigner()
 
@@ -24,28 +22,28 @@ type Signer struct {
 
 // NewSigner creates a new Signer using an optional key.
 // If no key is provided, a key will be randomly generated.
-// Key will be padded or truncated to 44 bytes long.
 func NewSigner(key ...[]byte) *Signer {
 	signer := &Signer{}
 	if len(key) == 0 {
-		signer.key = make([]byte, encodedLen)
+		signer.key = make([]byte, 32)
 		if _, err := rand.Read(signer.key[:]); err != nil {
 			log.Fatal(err)
 		}
 	} else {
 		signer.key = key[0]
 	}
-	if x := len(signer.key); x > encodedLen {
+	if x := len(signer.key); x > 32 {
 		signer.max = x
 	} else {
-		signer.max = encodedLen
+		signer.max = 32
 	}
 	return signer
 }
 
 // SetCookie signs the data and sets a cookie to w with the name.
+// Signing a cookie also base64 encodes it.
 func (signer *Signer) SetCookie(w http.ResponseWriter, name string, data []byte, expires time.Time) {
-	value := base64.URLEncoding.EncodeToString(signer.sign(data))
+	value := base64.RawStdEncoding.EncodeToString(signer.sign(data))
 	http.SetCookie(w, &http.Cookie{
 		Name:    name,
 		Value:   value,
@@ -60,31 +58,34 @@ func (signer *Signer) Verify(req *http.Request, name string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return signer.verify(cookie.Value)
+	b, err := base64.RawStdEncoding.DecodeString(cookie.Value)
+	if err != nil {
+		return nil, false
+	}
+	return signer.verify(b)
 }
 
 func (signer *Signer) sign(data []byte) []byte {
 	p := len(data)
 	b := make([]byte, p+signer.max)
 	copy(b, data)
-	copy(b[p:], signer.key[:])
+	copy(b[p:], signer.key)
 	hash := sha256.Sum256(b[:p+len(signer.key)])
-	base64.URLEncoding.Encode(b[p:], hash[:])
-	return b[:p+encodedLen]
+	copy(b[p:], hash[:])
+	return b[:p+32]
 }
 
-func (signer *Signer) verify(value string) ([]byte, bool) {
-	if len(value) < encodedLen {
+func (signer *Signer) verify(b []byte) ([]byte, bool) {
+	if len(b) < 32 {
 		return nil, false
 	}
-	p := len(value) - encodedLen
-	b := make([]byte, p+signer.max)
-	copy(b, value)
-	var clientHash [32]byte
-	base64.URLEncoding.Decode(clientHash[:], b[p:])
-	copy(b[p:], signer.key[:])
-	for i, x := range sha256.Sum256(b[:p+len(signer.key)]) {
-		if x != clientHash[i] {
+	p := len(b) - 32
+	clientHash := make([]byte, 32)
+	copy(clientHash, b[p:])
+	b = append(b[:p], signer.key...)
+	hash := sha256.Sum256(b[:p+len(signer.key)])
+	for i := range hash {
+		if hash[i] != clientHash[i] {
 			return nil, false
 		}
 	}

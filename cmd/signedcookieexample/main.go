@@ -19,6 +19,7 @@ func init() {
 
 func main() {
 	flag.Parse()
+	rand.Seed(time.Now().Unix())
 	http.HandleFunc("/", serve)
 	log.Fatal(http.ListenAndServe(port, nil))
 }

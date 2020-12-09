@@ -11,25 +11,34 @@ import (
 	"time"
 )
 
+const encodedLen = 44
+
 // DefaultSigner is the default signer.
 var DefaultSigner = NewSigner()
 
 // Signer is used to sign and verify cookies.
 type Signer struct {
 	key []byte
+	max int
 }
 
 // NewSigner creates a new Signer using an optional key.
 // If no key is provided, a key will be randomly generated.
+// Key will be padded or truncated to 44 bytes long.
 func NewSigner(key ...[]byte) *Signer {
 	signer := &Signer{}
 	if len(key) == 0 {
-		signer.key = make([]byte, 32)
-		if _, err := rand.Read(signer.key); err != nil {
+		signer.key = make([]byte, encodedLen)
+		if _, err := rand.Read(signer.key[:]); err != nil {
 			log.Fatal(err)
 		}
 	} else {
 		signer.key = key[0]
+	}
+	if x := len(signer.key); x > encodedLen {
+		signer.max = x
+	} else {
+		signer.max = encodedLen
 	}
 	return signer
 }
@@ -51,33 +60,30 @@ func (signer *Signer) Verify(req *http.Request, name string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
-	b, err := base64.URLEncoding.DecodeString(cookie.Value)
-	if err != nil {
-		return nil, false
-	}
-	return signer.verify(b)
+	return signer.verify(cookie.Value)
 }
 
 func (signer *Signer) sign(data []byte) []byte {
-	max := len(signer.key)
-	if max < 32 { // Prevent reallocating the array
-		max = 32
-	}
-	b := make([]byte, 0, len(data)+max)
-	b = append(b, data...)
-	hash := sha256.Sum256(append(b, signer.key...))
-	return append(b, hash[:]...)
+	p := len(data)
+	b := make([]byte, p+signer.max)
+	copy(b, data)
+	copy(b[p:], signer.key[:])
+	hash := sha256.Sum256(b[:p+len(signer.key)])
+	base64.URLEncoding.Encode(b[p:], hash[:])
+	return b[:p+encodedLen]
 }
 
-func (signer *Signer) verify(b []byte) ([]byte, bool) {
-	if len(b) < 32 {
+func (signer *Signer) verify(value string) ([]byte, bool) {
+	if len(value) < encodedLen {
 		return nil, false
 	}
-	p := len(b) - 32
-	clientHash := make([]byte, 32)
-	copy(clientHash, b[p:])
-	b = append(b[:p], signer.key...)
-	for i, x := range sha256.Sum256(b) {
+	p := len(value) - encodedLen
+	b := make([]byte, p+signer.max)
+	copy(b, value)
+	var clientHash [32]byte
+	base64.URLEncoding.Decode(clientHash[:], b[p:])
+	copy(b[p:], signer.key[:])
+	for i, x := range sha256.Sum256(b[:p+len(signer.key)]) {
 		if x != clientHash[i] {
 			return nil, false
 		}
